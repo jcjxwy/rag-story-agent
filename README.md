@@ -65,7 +65,7 @@ rag-story-agent/
 │   │   ├── vector_store.py
 │   │   └── retriever.py
 │   ├── generation/
-│   │   ├── llm.py
+│   │   ├── llm_client.py
 │   │   ├── prompt_builder.py
 │   │   └── writer.py
 │   ├── pipelines/
@@ -156,7 +156,7 @@ A new story influenced by:
 
 ## 📦 Installation
 
-git clone https://github.com/yourname/rag-story-agent.git  
+git clone https://github.com/jcjxwy/rag-story-agent.git  
 cd rag-story-agent  
 
 pip install -r requirements.txt  
