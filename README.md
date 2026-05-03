@@ -33,6 +33,8 @@ User Input
 ↓  
 Story Agent (Orchestrator)  
 ↓  
+Input Parser
+↓  
 Retriever  
 - Vector Search (semantic similarity)  
 - Graph Search (Obsidian links)  
@@ -58,8 +60,10 @@ rag-story-agent/
 │   │   └── story_agent.py
 │   ├── memory/
 │   │   ├── vault.py
-│   │   ├── parser.py
+│   │   ├── memory_parser.py
 │   │   └── graph.py
+│   ├── parser/
+│   │   └── input_parser.py
 │   ├── retrieval/
 │   │   ├── embedder.py
 │   │   ├── vector_store.py

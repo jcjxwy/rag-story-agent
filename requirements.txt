@@ -1,2 +1,5 @@
-openai
-faiss-cpu
+openai==2.33.0
+faiss-cpu==1.13.2
+langchain-openai==1.2.1
+langchain==1.2.14
+python-dotenv==1.0.1
