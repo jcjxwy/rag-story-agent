@@ -22,6 +22,7 @@ The system allows the agent to remember and reuse its own previously generated s
   - Relationship search (markdown links / graph structure)
 - Obsidian-style knowledge vault (Markdown files)
 - LLM-powered story generation
+- LangGraph feedback loop that regenerates until the user approves the story
 - Self-updating memory loop (write-back to vault)
 - Optional Streamlit UI for interaction and debugging
 
@@ -45,6 +46,10 @@ LLM Generator
 ↓  
 Story Output  
 ↓  
+User Feedback / Approval  
+->  
+If rejected, repeat LLM Generator with feedback  
+->  
 Memory Store (Markdown Vault)  
 ↓  
 Index + Graph Update  
@@ -127,7 +132,15 @@ A language model generates a new story using:
 
 ---
 
-### 5. Memory Update Loop
+### 5. Feedback Loop
+After each generated draft:
+- The user approves the story, or
+- The user gives feedback
+- LangGraph routes rejected drafts back to the generation node with the feedback and previous draft
+
+---
+
+### 6. Memory Update Loop
 After generation:
 - Save story to vault
 - Update graph links
@@ -153,6 +166,7 @@ A new story influenced by:
 - Python
 - FAISS (vector search)
 - OpenAI API (or compatible LLM)
+- LangGraph (recursive story generation flow)
 - Markdown-based memory system
 - Streamlit (optional UI)
 
