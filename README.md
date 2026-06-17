@@ -1,219 +1,159 @@
-# 📖 AI Story Memory Agent (RAG + Obsidian Memory System)
+# AI Story Writer (RAG + LangGraph)
 
-## 🧠 Overview
+## Overview
 
-This project is a memory-augmented AI storytelling agent that generates coherent and evolving narratives using a hybrid retrieval system.
-
-It combines:
-- Retrieval-Augmented Generation (RAG)
-- Vector similarity search (FAISS or similar)
-- Graph-based memory (Obsidian-style Markdown links)
-- Persistent local knowledge storage
-
-The system allows the agent to remember and reuse its own previously generated stories, enabling long-term narrative consistency and world-building.
+A memory-augmented AI storytelling agent that generates stories using RAG (Retrieval-Augmented Generation). The agent retrieves semantically similar past stories as context, generates a new story, collects user feedback, and loops until approved.
 
 ---
 
-## 🚀 Key Features
+## Architecture
 
-- Memory-based storytelling using previously generated stories
-- Hybrid retrieval system:
-  - Semantic search (vector embeddings)
-  - Relationship search (markdown links / graph structure)
-- Obsidian-style knowledge vault (Markdown files)
-- LLM-powered story generation
-- LangGraph feedback loop that regenerates until the user approves the story
-- Self-updating memory loop (write-back to vault)
-- Optional Streamlit UI for interaction and debugging
+```
+User Input
+↓
+parser      — extracts keywords from the user prompt
+↓
+retriever   — semantic vector search over past stories (FAISS)
+↓
+writer      — builds prompt from input + context + feedback, calls LLM
+↓
+feedback_provider  — user approves or provides revision feedback
+↓ (if rejected, loop back to writer)
+memory_updater     — saves approved story to memory
+↓
+END
+```
 
----
-
-## 🏗️ Architecture
-
-User Input  
-↓  
-Story Agent (Orchestrator)  
-↓  
-Input Parser
-↓  
-Retriever  
-- Vector Search (semantic similarity)  
-- Graph Search (Obsidian links)  
-↓  
-Context Builder  
-↓  
-LLM Generator  
-↓  
-Story Output  
-↓  
-User Feedback / Approval  
-->  
-If rejected, repeat LLM Generator with feedback  
-->  
-Memory Store (Markdown Vault)  
-↓  
-Index + Graph Update  
+The graph is defined in [app/graph.py](app/graph.py) using LangGraph's `StateGraph`. Shared state across nodes is typed in [app/state.py](app/state.py) as `StoryState`.
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```text
-rag-story-agent/
+story_writer/
 ├── app/
 │   ├── agent/
-│   │   └── story_agent.py
-│   ├── memory/
-│   │   ├── vault.py
-│   │   ├── memory_parser.py
-│   │   └── graph.py
-│   ├── parser/
-│   │   └── input_parser.py
-│   ├── retrieval/
-│   │   ├── embedder.py
-│   │   ├── vector_store.py
-│   │   └── retriever.py
-│   ├── generation/
-│   │   ├── llm_client.py
-│   │   ├── prompt_builder.py
-│   │   └── writer.py
-│   ├── pipelines/
-│   │   ├── ingest.py
-│   │   └── update.py
-│   └── utils/
-│
-├── ui/
-│   └── app.py
-│
-├── data/
-│   ├── vault/
-│   └── index/
-│
-├── tests/
+│   │   ├── evaluation/
+│   │   │   └── feedback_collector.py   # CLI prompt or injected feedback provider
+│   │   ├── generation/
+│   │   │   ├── llm_client.py           # DeepSeek LLM via OpenAI-compatible API
+│   │   │   └── writer.py               # Prompt builder + writer node
+│   │   ├── memory/
+│   │   │   └── memory_updater.py       # Memory write-back node
+│   │   ├── parser/
+│   │   │   └── input_parser.py         # Keyword extraction from user input
+│   │   └── retrieval/
+│   │       ├── retriever.py            # Retriever node (FAISS-backed)
+│   │       └── vector_store.py         # FAISS index wrapper
+│   ├── utils/
+│   │   └── logger.py
+│   ├── graph.py                        # LangGraph graph definition
+│   └── state.py                        # StoryState TypedDict
+├── Dockerfile
 ├── requirements.txt
 └── README.md
 ```
 
 ---
 
-## ⚙️ How It Works
+## State
 
-### 1. Memory Storage
-All generated stories are stored as Markdown files in a local vault.
+`StoryState` fields passed between nodes:
 
-Each story may include:
-- Tags (#sci-fi, #fantasy)
-- Links ([[related story]])
-- Metadata (theme, tone, characters)
-
----
-
-### 2. Retrieval (RAG + Graph)
-When a user prompt is received:
-- Convert query into embeddings
-- Retrieve semantically similar stories
-- Expand context using linked notes
+| Field            | Type        | Description                              |
+|------------------|-------------|------------------------------------------|
+| `user_input`     | `str`       | Raw user prompt                          |
+| `keywords`       | `list[str]` | Extracted keywords from parser           |
+| `context`        | `str`       | Retrieved memory context                 |
+| `story`          | `str`       | Current generated story                  |
+| `feedback`       | `str`       | User revision feedback                   |
+| `approved`       | `bool`      | Whether the story was approved           |
+| `revision_count` | `int`       | Number of generation attempts            |
+| `memory_updated` | `bool`      | Whether memory was written back          |
 
 ---
 
-### 3. Context Building
-Retrieved memory is transformed into structured context:
-- themes
-- narrative patterns
-- related story elements
+## Nodes
+
+**`parser`** — Uses an LLM agent with structured output to extract keywords (world setting, characters, writing style) from the user prompt.
+
+**`retriever`** — Queries the FAISS vector store with the user input and returns relevant past stories as context. Falls back to a stub if no retriever is injected.
+
+**`writer`** — Builds a prompt from `user_input`, `keywords`, `context`, and any `feedback` + previous `story`, then calls the LLM. Increments `revision_count` on each run.
+
+**`feedback_provider`** — If a `feedback_provider` is injected via `config["configurable"]`, delegates to it. Otherwise falls back to interactive CLI (`input()`).
+
+**`memory_updater`** — Calls the injected `memory_updater` (via `config["configurable"]`) to persist the approved story. No-ops if none is provided.
 
 ---
 
-### 4. Story Generation
-A language model generates a new story using:
-- user prompt
-- retrieved memory context
-- constraints (no repetition, maintain coherence)
+## Tech Stack
+
+- **Python 3.10**
+- **LangGraph** — graph orchestration and conditional feedback loop
+- **LangChain** — LLM abstractions and agent tooling
+- **DeepSeek** (`deepseek-chat`) — LLM via OpenAI-compatible API
+- **FAISS** — vector similarity search
+- **python-dotenv** — environment variable management
 
 ---
 
-### 5. Feedback Loop
-After each generated draft:
-- The user approves the story, or
-- The user gives feedback
-- LangGraph routes rejected drafts back to the generation node with the feedback and previous draft
+## Configuration
+
+Copy `.env` and set your DeepSeek API key:
+
+```
+DEEPSEEK_API_KEY=your_key_here
+```
 
 ---
 
-### 6. Memory Update Loop
-After generation:
-- Save story to vault
-- Update graph links
-- Refresh vector index
+## Installation
+
+```bash
+git clone https://github.com/jcjxwy/rag-story-agent.git
+cd rag-story-agent
+pip install -r requirements.txt
+```
 
 ---
 
-## 🧪 Example
+## Run
 
-Input:
-Write a sci-fi story about isolation in deep space
+Components are injected via `config["configurable"]` when invoking the graph:
 
-Output:
-A new story influenced by:
-- previous space isolation stories
-- themes like loneliness and survival
-- related narrative structures from memory
+```python
+from app.graph import build_graph
+from app.agent.generation.llm_client import LLMClient
 
----
+graph = build_graph().compile()
+graph.invoke(
+    {"user_input": "Write a sci-fi story about isolation in deep space"},
+    config={
+        "configurable": {
+            "writer": LLMClient(),
+            # "retriever": ...,
+            # "memory_updater": ...,
+            # "feedback_provider": ...,
+        }
+    }
+)
+```
 
-## 🧰 Tech Stack
-
-- Python
-- FAISS (vector search)
-- OpenAI API (or compatible LLM)
-- LangGraph (recursive story generation flow)
-- Markdown-based memory system
-- Streamlit (optional UI)
-
----
-
-## 📦 Installation
-
-git clone https://github.com/jcjxwy/rag-story-agent.git  
-cd rag-story-agent  
-
-pip install -r requirements.txt  
+If no `feedback_provider` is injected, the agent falls back to interactive CLI prompts.
 
 ---
 
-## ▶️ Run
+## Docker
 
-CLI mode:
-python app/main.py  
-
-UI mode (optional):
-streamlit run ui/app.py  
-
----
-
-## 🔮 Future Improvements
-
-- Add reranking model for retrieval
-- Improve memory summarization
-- Add multi-agent system (writer + critic)
-- Deploy with FastAPI backend
-- Add graph visualization (Obsidian-like UI)
-- Support multi-user story worlds
+```bash
+docker build -t story-writer .
+docker run -e DEEPSEEK_API_KEY=your_key_here story-writer
+```
 
 ---
 
-## 📌 Design Philosophy
-
-This system explores how AI agents can evolve through persistent self-generated memory, combining:
-
-- Structured storage (Markdown vault)
-- Semantic retrieval (embeddings)
-- Relational reasoning (graph links)
-
-The goal is to simulate long-term narrative intelligence where stories influence future generations of stories.
-
----
-
-## 📄 License
+## License
 
 MIT License
