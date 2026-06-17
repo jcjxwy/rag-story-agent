@@ -32,4 +32,20 @@ class InputParser:
         return response['structured_response'].keywords
     
 def parser_node(state: StoryState, config: RunnableConfig):
-    pass
+    configurable = config.get("configurable", {})
+    parser = configurable.get("parser")
+
+    user_input = state.get("user_input", "")
+
+    if parser:
+        if hasattr(parser, "parse_input"):
+            keywords = parser.parse_input(user_input)
+        else:
+            keywords = parser(user_input)
+    else:
+        keywords = []
+
+    if isinstance(keywords, str):
+        keywords = [kw.strip() for kw in keywords.split(",") if kw.strip()]
+
+    return {"keywords": keywords}
