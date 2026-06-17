@@ -5,6 +5,7 @@ class StoryState(TypedDict, total=False):
     keywords: list[str]
     context: str
     story: str
+    story_title: str
     feedback: str
     approved: bool
     revision_count: int

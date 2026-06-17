@@ -1,5 +1,18 @@
 from state import StoryState
 from langchain_core.runnables import RunnableConfig
+from .vault import Vault
+
+
+class MemoryUpdater:
+    def __init__(self, vault: Vault):
+        self.vault = vault
+
+    def update(self, state: StoryState) -> dict:
+        title = state.get("story_title", "")
+        if not title:
+            raise ValueError("StoryState is missing 'story_title'")
+        self.vault.save(title, state.get("story", ""), state.get("keywords", []))
+        return {"memory_updated": True}
 
 
 def memory_updater_node(state: StoryState, config: RunnableConfig):
