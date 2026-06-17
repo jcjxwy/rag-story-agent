@@ -1,5 +1,7 @@
 from langchain.agents import create_agent
 from dataclasses import dataclass
+from state import StoryState
+from langchain_core.runnables import RunnableConfig
 
 @dataclass
 class ResponseFormat:
@@ -28,3 +30,6 @@ class InputParser:
             ]}
         )
         return response['structured_response'].keywords
+    
+def parser_node(state: StoryState, config: RunnableConfig):
+    pass

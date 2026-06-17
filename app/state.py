@@ -8,3 +8,4 @@ class StoryState(TypedDict, total=False):
     feedback: str
     approved: bool
     revision_count: int
+    memory_updated: bool
