@@ -3,13 +3,16 @@ from langchain_core.runnables import RunnableConfig
 
 
 class FeedbackCollector:
-    def collect(self, state: StoryState) -> tuple[bool, str]:
+    def collect(self, state: StoryState) -> tuple[bool, bool, str]:
+        """Returns (approved, abandoned, feedback)."""
         _display_story(state)
-        answer = input("Approve this story? [y/N]: ").strip().lower()
-        if answer in {"y", "yes"}:
-            return True, ""
+        answer = input("Action? [a]pprove / [r]evise / [q]uit: ").strip().lower()
+        if answer in {"a", "approve"}:
+            return True, False, ""
+        if answer in {"q", "quit", "abandon"}:
+            return False, True, ""
         feedback = input("What should be changed? ").strip()
-        return False, feedback
+        return False, False, feedback
 
 
 def feedback_collector_node(state: StoryState, config: RunnableConfig):
@@ -18,25 +21,29 @@ def feedback_collector_node(state: StoryState, config: RunnableConfig):
 
     if feedback_provider:
         if hasattr(feedback_provider, "collect"):
-            approved, feedback = feedback_provider.collect(state)
+            result = feedback_provider.collect(state)
+            if len(result) == 3:
+                approved, abandoned, feedback = result
+            else:
+                approved, feedback = result
+                abandoned = False
         else:
             approved, feedback = feedback_provider(state.get("story", ""))
+            abandoned = False
         return {
             "approved": approved,
-            "feedback": "" if approved else feedback.strip(),
+            "abandoned": abandoned,
+            "feedback": "" if (approved or abandoned) else feedback.strip(),
         }
 
     _display_story(state)
-    answer = input("Approve this story? [y/N]: ").strip().lower()
-    if answer in {"y", "yes"}:
-        return {"approved": True, "feedback": ""}
-
+    answer = input("Action? [a]pprove / [r]evise / [q]uit: ").strip().lower()
+    if answer in {"a", "approve"}:
+        return {"approved": True, "abandoned": False, "feedback": ""}
+    if answer in {"q", "quit", "abandon"}:
+        return {"approved": False, "abandoned": True, "feedback": ""}
     feedback = input("What should be changed? ").strip()
-    return {"approved": False, "feedback": feedback}
-
-
-def story_accept(state: StoryState) -> str:
-    return "approve" if state.get("approved") else "revise"
+    return {"approved": False, "abandoned": False, "feedback": feedback}
 
 
 def _display_story(state: StoryState):

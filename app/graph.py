@@ -19,6 +19,8 @@ def _route_by_intent(state: StoryState) -> str:
 def _route_after_feedback(state: StoryState) -> str:
     if state.get("approved"):
         return "approve"
+    if state.get("abandoned"):
+        return "abandon"
     return "revise_world" if state.get("intent") == "world_building" else "revise_story"
 
 
@@ -48,6 +50,7 @@ def build_graph(checkpointer=None):
             "revise_story": "writer",
             "revise_world": "world_builder",
             "approve": "memory_updater",
+            "abandon": END,
         },
     )
     graph.add_edge("memory_updater", END)

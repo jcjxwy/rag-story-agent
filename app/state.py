@@ -11,5 +11,6 @@ class StoryState(TypedDict, total=False):
     story_title: str
     feedback: str
     approved: bool
+    abandoned: bool
     revision_count: int
     memory_updated: bool

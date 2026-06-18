@@ -72,12 +72,21 @@ def _invoke(initial_state=None):
     st.session_state.graph.invoke(initial_state, config=_thread_config())
 
 
-def _inject_feedback(approved: bool, feedback: str = ""):
+def _inject_feedback(approved: bool, feedback: str = "", abandoned: bool = False):
     st.session_state.graph.update_state(
         _thread_config(),
-        {"approved": approved, "feedback": feedback},
+        {"approved": approved, "abandoned": abandoned, "feedback": feedback},
         as_node="feedback_provider",
     )
+
+
+def _abandon(label: str = ""):
+    _inject_feedback(approved=False, abandoned=True)
+    _invoke()
+    note = f"Abandoned **{label}**. Nothing was saved." if label else "Abandoned. Nothing was saved."
+    st.session_state.messages.append({"role": "assistant", "content": note})
+    st.session_state.stage = "idle"
+    st.rerun()
 
 
 def _render_story(state: dict):
@@ -106,7 +115,7 @@ if st.session_state.stage == "reviewing":
     with st.chat_message("assistant"):
         title, story = _render_story(state)
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("✓  Approve", use_container_width=True, type="primary"):
             _inject_feedback(approved=True)
@@ -123,6 +132,9 @@ if st.session_state.stage == "reviewing":
         if st.button("↻  Revise", use_container_width=True):
             st.session_state.stage = "revising"
             st.rerun()
+    with col3:
+        if st.button("✕  Abandon", use_container_width=True):
+            _abandon(title)
 
 
 # ── Revising stage ────────────────────────────────────────────────────────────
@@ -135,7 +147,11 @@ elif st.session_state.stage == "revising":
 
     with st.form("feedback_form", clear_on_submit=True):
         feedback = st.text_area("What should be changed?", placeholder="Be specific...")
-        submitted = st.form_submit_button("Submit feedback", type="primary")
+        col1, col2 = st.columns(2)
+        with col1:
+            submitted = st.form_submit_button("Submit feedback", type="primary", use_container_width=True)
+        with col2:
+            cancelled = st.form_submit_button("✕  Abandon", use_container_width=True)
 
     if submitted and feedback.strip():
         st.session_state.messages.append(
@@ -146,6 +162,9 @@ elif st.session_state.stage == "revising":
             _invoke()
         st.session_state.stage = "reviewing"
         st.rerun()
+
+    if cancelled:
+        _abandon(state.get("story_title", ""))
 
 
 # ── Idle stage: prompt input ──────────────────────────────────────────────────
