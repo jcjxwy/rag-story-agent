@@ -2,7 +2,7 @@
 
 ## Overview
 
-A memory-augmented AI storytelling agent that generates stories using RAG (Retrieval-Augmented Generation). The agent retrieves semantically similar past stories as context, generates a new story, collects user feedback, and loops until approved.
+A memory-augmented AI creative writing agent that supports two modes: **story writing** and **world building**. The agent retrieves relevant context from a local Markdown vault, generates content via an LLM, collects user feedback in a revision loop, and saves approved content back to the vault. Stories and world settings are organised by world in Obsidian-style directories with `[[wikilinks]]`.
 
 ---
 
@@ -11,20 +11,23 @@ A memory-augmented AI storytelling agent that generates stories using RAG (Retri
 ```
 User Input
 ↓
-parser      — extracts keywords from the user prompt
+parser          — classifies intent (story / world_building), extracts keywords,
+                  world_name, and optional search_folders
 ↓
-retriever   — semantic vector search over past stories (FAISS)
+retriever       — 3-stage: FAISS semantic search → keyword rerank → graph expand
 ↓
-writer      — builds prompt from input + context + feedback, calls LLM
+    ┌── intent = story ──────── writer        — generates title + story
+    └── intent = world_building  world_builder — generates structured world notes (no narrative)
 ↓
 feedback_provider  — user approves or provides revision feedback
-↓ (if rejected, loop back to writer)
-memory_updater     — saves approved story to memory
+↓ (if rejected, loop back to writer / world_builder)
+memory_updater     — saves to vault; world building goes to its own directory,
+                     stories go to the matching world directory if world_name is set
 ↓
 END
 ```
 
-The graph is defined in [app/graph.py](app/graph.py) using LangGraph's `StateGraph`. Shared state across nodes is typed in [app/state.py](app/state.py) as `StoryState`.
+The graph is defined in [app/graph.py](app/graph.py) using LangGraph's `StateGraph`. Shared state is typed in [app/state.py](app/state.py) as `StoryState`.
 
 ---
 
@@ -35,23 +38,34 @@ story_writer/
 ├── app/
 │   ├── agent/
 │   │   ├── evaluation/
-│   │   │   └── feedback_collector.py   # CLI prompt or injected feedback provider
+│   │   │   └── feedback_collector.py   # feedback node + story_accept routing
 │   │   ├── generation/
-│   │   │   ├── clients.py           # DeepSeek LLM via OpenAI-compatible API
-│   │   │   └── writer.py               # Prompt builder + writer node
+│   │   │   ├── clients.py              # LLMClient + EmbeddingClient (DeepSeek)
+│   │   │   ├── writer.py               # Writer node — story generation
+│   │   │   └── world_builder.py        # WorldBuilder node — world-setting brainstorm
 │   │   ├── memory/
-│   │   │   └── memory_updater.py       # Memory write-back node
+│   │   │   ├── vault.py                # Obsidian-style Markdown vault
+│   │   │   └── memory_updater.py       # Saves content to vault with correct subdir
 │   │   ├── parser/
-│   │   │   └── input_parser.py         # Keyword extraction from user input
+│   │   │   └── input_parser.py         # Intent + keyword + world_name extraction
 │   │   └── retrieval/
-│   │       ├── retriever.py            # Retriever node (FAISS-backed)
+│   │       ├── retriever.py            # 3-stage retrieval pipeline
 │   │       └── vector_store.py         # FAISS index wrapper
 │   ├── utils/
 │   │   └── logger.py
-│   ├── graph.py                        # LangGraph graph definition
-│   └── state.py                        # StoryState TypedDict
-├── Dockerfile
+│   ├── graph.py                        # LangGraph graph definition + routing
+│   ├── state.py                        # StoryState TypedDict
+│   └── main.py                         # CLI entry point
+├── ui/
+│   └── app.py                          # Streamlit chatbot UI
+├── data/
+│   └── vault/                          # Markdown files (created at runtime)
+│       └── <world-name>/               # One directory per world
+│           ├── <world-name>.md         # World setting document
+│           └── <story-title>.md        # Stories set in this world
+├── pyrightconfig.json
 ├── requirements.txt
+├── Dockerfile
 └── README.md
 ```
 
@@ -61,50 +75,85 @@ story_writer/
 
 `StoryState` fields passed between nodes:
 
-| Field            | Type        | Description                              |
-|------------------|-------------|------------------------------------------|
-| `user_input`     | `str`       | Raw user prompt                          |
-| `keywords`       | `list[str]` | Extracted keywords from parser           |
-| `context`        | `str`       | Retrieved memory context                 |
-| `story`          | `str`       | Current generated story                  |
-| `feedback`       | `str`       | User revision feedback                   |
-| `approved`       | `bool`      | Whether the story was approved           |
-| `revision_count` | `int`       | Number of generation attempts            |
-| `memory_updated` | `bool`      | Whether memory was written back          |
+| Field            | Type        | Description                                                  |
+|------------------|-------------|--------------------------------------------------------------|
+| `intent`         | `str`       | `"story"` or `"world_building"` — set by parser             |
+| `world_name`     | `str`       | Slug of the target world directory (e.g. `"elden-vale"`)     |
+| `user_input`     | `str`       | Raw user prompt                                              |
+| `keywords`       | `list[str]` | Extracted keywords from parser                               |
+| `search_folders` | `list[str]` | Vault subdirectories to restrict retrieval to                |
+| `context`        | `str`       | Retrieved vault context                                      |
+| `story`          | `str`       | Current story or world-setting draft                         |
+| `story_title`    | `str`       | Title generated by writer / world_builder                    |
+| `feedback`       | `str`       | User revision feedback                                       |
+| `approved`       | `bool`      | Whether the draft was approved                               |
+| `revision_count` | `int`       | Number of generation attempts                                |
+| `memory_updated` | `bool`      | Whether vault write-back succeeded                           |
 
 ---
 
 ## Nodes
 
-**`parser`** — Uses an LLM agent with structured output to extract keywords (world setting, characters, writing style) from the user prompt.
+**`parser`** — Classifies the user's intent as `story` or `world_building`. Extracts `keywords`, `world_name` (slug of any explicitly named world), and `search_folders`.
 
-**`retriever`** — Queries the FAISS vector store with the user input and returns relevant past stories as context. Falls back to a stub if no retriever is injected.
+**`retriever`** — Three-stage pipeline:
+1. FAISS semantic search over vault story bodies (wider candidate pool)
+2. Re-rank survivors by keyword-field overlap (set intersection)
+3. Graph-expand top results by following `[[wikilinks]]` one hop
 
-**`writer`** — Builds a prompt from `user_input`, `keywords`, `context`, and any `feedback` + previous `story`, then calls the LLM. Increments `revision_count` on each run.
+Filters by `search_folders` when specified.
 
-**`feedback_provider`** — If a `feedback_provider` is injected via `config["configurable"]`, delegates to it. Otherwise falls back to interactive CLI (`input()`).
+**`writer`** — Builds a prompt from `user_input`, `keywords`, `context`, and optional `feedback` + previous draft, then calls the LLM with structured output (`title` + `story`).
 
-**`memory_updater`** — Calls the injected `memory_updater` (via `config["configurable"]`) to persist the approved story. No-ops if none is provided.
+**`world_builder`** — Same prompt-building pattern as `writer` but with a different system prompt that explicitly forbids narrative. Returns structured world-setting notes (`title` + `world_setting`) organised by headings and bullet points.
+
+**`feedback_provider`** — Delegates to the injected `FeedbackCollector` (CLI) or, in Streamlit mode, receives state injected via `graph.update_state(..., as_node="feedback_provider")`.
+
+**`memory_updater`** — Saves to the vault. World-building documents go to `data/vault/<slugify(title)>/`. Stories go to `data/vault/<world_name>/` if `world_name` is set, otherwise vault root.
+
+---
+
+## Vault Layout
+
+```
+data/vault/
+├── elden-vale/
+│   ├── elden-vale-world-notes.md   ← world building document
+│   ├── the-first-hero.md           ← story set in Elden Vale
+│   └── siege-of-the-keep.md
+├── cyberpunk-2087/
+│   ├── cyberpunk-2087.md
+│   └── neon-rain.md
+└── standalone-story.md             ← story with no world
+```
+
+Each Markdown file contains YAML frontmatter (`title`, `date`, `keywords`, `related`) and a `## Related` section with `[[wikilinks]]` to related files. Backlinks are added automatically on save.
 
 ---
 
 ## Tech Stack
 
-- **Python 3.10**
-- **LangGraph** — graph orchestration and conditional feedback loop
-- **LangChain** — LLM abstractions and agent tooling
-- **DeepSeek** (`deepseek-chat`) — LLM via OpenAI-compatible API
+- **Python 3.12**
+- **LangGraph** — graph orchestration, conditional routing, human-in-the-loop interrupts
+- **LangChain** — LLM abstractions, structured output
+- **DeepSeek** (`deepseek-chat`, `deepseek-embedding`) — LLM and embeddings via OpenAI-compatible API
 - **FAISS** — vector similarity search
+- **Streamlit** — chatbot UI
+- **PyYAML** — vault frontmatter parsing
 - **python-dotenv** — environment variable management
 
 ---
 
 ## Configuration
 
-Copy `.env` and set your DeepSeek API key:
+Create a `.env` file at the project root:
 
 ```
 DEEPSEEK_API_KEY=your_key_here
+
+# Optional overrides
+EMBEDDING_MODEL=deepseek-embedding
+EMBEDDING_BASE_URL=https://api.deepseek.com
 ```
 
 ---
@@ -112,8 +161,6 @@ DEEPSEEK_API_KEY=your_key_here
 ## Installation
 
 ```bash
-git clone https://github.com/jcjxwy/rag-story-agent.git
-cd rag-story-agent
 pip install -r requirements.txt
 ```
 
@@ -121,32 +168,17 @@ pip install -r requirements.txt
 
 ## Run
 
-Components are injected via `config["configurable"]` when invoking the graph:
-
-```python
-from app.graph import build_graph
-from app.agent.generation.llm_client import LLMClient
-
-graph = build_graph().compile()
-graph.invoke(
-    {"user_input": "Write a sci-fi story about isolation in deep space"},
-    config={
-        "configurable": {
-            "writer": LLMClient(),
-            # "retriever": ...,
-            # "memory_updater": ...,
-            # "feedback_provider": ...,
-        }
-    }
-)
+**CLI:**
+```bash
+python app/main.py
 ```
 
-If no `feedback_provider` is injected, the agent falls back to interactive CLI prompts.
+**Streamlit UI:**
+```bash
+streamlit run ui/app.py
+```
 
----
-
-## Docker
-
+**Docker:**
 ```bash
 docker build -t story-writer .
 docker run -e DEEPSEEK_API_KEY=your_key_here story-writer

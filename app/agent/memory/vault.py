@@ -21,7 +21,7 @@ class Vault:
         }
         dir_path = self.vault_dir / subdir if subdir else self.vault_dir
         dir_path.mkdir(parents=True, exist_ok=True)
-        path = dir_path / f"{_slugify(title)}.md"
+        path = dir_path / f"{slugify(title)}.md"
         path.write_text(_render(frontmatter, story, related_titles), encoding="utf-8")
         return path
 
@@ -45,7 +45,7 @@ class Vault:
         return [_extract_title(link) for link in data["frontmatter"].get("related", [])]
 
     def _find_file(self, title: str) -> Path | None:
-        matches = list(self.vault_dir.rglob(f"{_slugify(title)}.md"))
+        matches = list(self.vault_dir.rglob(f"{slugify(title)}.md"))
         return matches[0] if matches else None
 
     def _find_related_by_keywords(self, keywords: list[str], exclude: str = "") -> list[str]:
@@ -103,5 +103,5 @@ def _extract_title(link: str) -> str:
     return m.group(1) if m else link
 
 
-def _slugify(title: str) -> str:
+def slugify(title: str) -> str:
     return re.sub(r"[^\w-]", "-", title.lower()).strip("-")

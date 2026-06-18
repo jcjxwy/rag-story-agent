@@ -1,6 +1,6 @@
 from state import StoryState
 from langchain_core.runnables import RunnableConfig
-from .vault import Vault
+from .vault import Vault, slugify
 
 
 class MemoryUpdater:
@@ -11,7 +11,11 @@ class MemoryUpdater:
         title = state.get("story_title", "")
         if not title:
             raise ValueError("StoryState is missing 'story_title'")
-        self.vault.save(title, state.get("story", ""), state.get("keywords", []))
+        if state.get("intent") == "world_building":
+            subdir = slugify(title)
+        else:
+            subdir = state.get("world_name", "")
+        self.vault.save(title, state.get("story", ""), state.get("keywords", []), subdir=subdir)
         return {"memory_updated": True}
 
 

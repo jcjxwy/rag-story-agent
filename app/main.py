@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from graph import build_graph
 from agent.generation.clients import LLMClient, EmbeddingClient
 from agent.generation.writer import Writer
+from agent.generation.world_builder import WorldBuilder
 from agent.parser.input_parser import InputParser
 from agent.retrieval.retriever import Retriever
 from agent.memory.vault import Vault
@@ -25,6 +26,7 @@ def main():
             "parser": InputParser(llm),
             "retriever": Retriever(vault, embedder, dim=EmbeddingClient.DIM),
             "writer": Writer(llm),
+            "world_builder": WorldBuilder(llm),
             "feedback_provider": FeedbackCollector(),
             "memory_updater": MemoryUpdater(vault),
         }
