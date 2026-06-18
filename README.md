@@ -37,7 +37,7 @@ story_writer/
 │   │   ├── evaluation/
 │   │   │   └── feedback_collector.py   # CLI prompt or injected feedback provider
 │   │   ├── generation/
-│   │   │   ├── llm_client.py           # DeepSeek LLM via OpenAI-compatible API
+│   │   │   ├── clients.py           # DeepSeek LLM via OpenAI-compatible API
 │   │   │   └── writer.py               # Prompt builder + writer node
 │   │   ├── memory/
 │   │   │   └── memory_updater.py       # Memory write-back node
