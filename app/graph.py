@@ -1,6 +1,6 @@
 from langgraph.graph import START, END, StateGraph
-from .utils.logger import get_logger
-from .state import StoryState
+from utils.logger import get_logger
+from state import StoryState
 
 from agent.parser.input_parser import parser_node
 from agent.retrieval.retriever import retriever_node
