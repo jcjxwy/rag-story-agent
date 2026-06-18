@@ -1,33 +1,37 @@
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from pydantic import SecretStr
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 
+_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
 
 class LLMClient:
     def __init__(self):
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        if not api_key:
+            raise ValueError("DEEPSEEK_API_KEY environment variable is not set")
         self.llm = ChatOpenAI(
             model="deepseek-chat",
-            api_key=os.getenv("DEEPSEEK_API_KEY"),
-            base_url="https://api.deepseek.com",
+            api_key=SecretStr(api_key),
+            base_url=_DEEPSEEK_BASE_URL,
             temperature=0.7,
         )
 
 
 class EmbeddingClient:
-    DIM = 1536  # dimension for text-embedding-3-small
+    DIM = 1536  # dimension for deepseek-embedding
 
     def __init__(self):
-        kwargs = {}
-        base_url = os.getenv("EMBEDDING_BASE_URL")
-        if base_url:
-            kwargs["base_url"] = base_url
-
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        if not api_key:
+            raise ValueError("DEEPSEEK_API_KEY environment variable is not set")
         self.embedder = OpenAIEmbeddings(
-            model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
-            api_key=os.getenv("OPENAI_API_KEY"),
-            **kwargs,
+            model=os.getenv("EMBEDDING_MODEL", "deepseek-embedding"),
+            api_key=SecretStr(api_key),
+            base_url=os.getenv("EMBEDDING_BASE_URL", _DEEPSEEK_BASE_URL),
         )
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:

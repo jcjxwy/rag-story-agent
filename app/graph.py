@@ -11,7 +11,7 @@ from agent.evaluation.feedback_collector import story_accept
 
 logger = get_logger(__name__)
 
-def build_graph():
+def build_graph(checkpointer=None):
     graph = StateGraph(StoryState)
 
     graph.add_node("parser", parser_node)
@@ -34,4 +34,6 @@ def build_graph():
     )
     graph.add_edge("memory_updater", END)
 
+    if checkpointer:
+        return graph.compile(checkpointer=checkpointer, interrupt_before=["feedback_provider"])
     return graph.compile()

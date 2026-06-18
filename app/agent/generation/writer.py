@@ -21,7 +21,7 @@ class Writer:
     )
 
     def __init__(self, llm):
-        self._structured_llm = llm.with_structured_output(StoryOutput)
+        self._structured_llm = llm.with_structured_output(StoryOutput, method="function_calling")
 
     def generate_story(self, prompt: str) -> StoryOutput:
         return self._structured_llm.invoke([
@@ -53,6 +53,9 @@ def writer_node(state: StoryState, config: RunnableConfig):
     else:
         story = prompt
 
+    if not title and story:
+        title = " ".join(story.split()[:6])
+
     return {
         "story": story,
         "story_title": title,
@@ -61,21 +64,24 @@ def writer_node(state: StoryState, config: RunnableConfig):
 
 
 def _build_prompt(state: StoryState) -> str:
+    is_revision = bool(state.get("feedback"))
+
     sections = [
+        "Revise the previous story based on the user's feedback."
+        if is_revision else
         "Write a story based on the user request.",
         f"User request:\n{state.get('user_input', '')}",
     ]
 
     if state.get("keywords"):
-        sections.append(f"Important keywords:\n{', '.join(state['keywords'])}")
+        sections.append(f"Important keywords:\n{', '.join(state.get('keywords', []))}")
 
-    if state.get("context"):
-        sections.append(f"Relevant memory context:\n{state['context']}")
+    if not is_revision and state.get("context"):
+        sections.append(f"Relevant memory context:\n{state.get('context', '')}")
 
-    if state.get("feedback"):
+    if is_revision:
         sections.append(
-            "Revise the previous story based on this feedback:\n"
-            f"{state['feedback']}\n\n"
+            f"Feedback:\n{state.get('feedback', '')}\n\n"
             f"Previous story:\n{state.get('story', '')}"
         )
 

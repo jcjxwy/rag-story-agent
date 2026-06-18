@@ -31,7 +31,7 @@ _SYSTEM_PROMPT = (
 
 class InputParser:
     def __init__(self, llm):
-        self._structured_llm = llm.with_structured_output(ResponseFormat)
+        self._structured_llm = llm.with_structured_output(ResponseFormat, method="function_calling")
 
     def parse_input(self, user_input: str) -> ResponseFormat:
         return self._structured_llm.invoke([
