@@ -9,7 +9,7 @@ class Vault:
         self.vault_dir = Path(vault_dir)
         self.vault_dir.mkdir(parents=True, exist_ok=True)
 
-    def save(self, title: str, story: str, keywords: list[str]) -> Path:
+    def save(self, title: str, story: str, keywords: list[str], subdir: str = "") -> Path:
         related_titles = self._find_related_by_keywords(keywords, exclude=title)
         self._add_backlinks(new_title=title, to=related_titles)
 
@@ -19,16 +19,24 @@ class Vault:
             "keywords": keywords,
             "related": [f"[[{t}]]" for t in related_titles],
         }
-        path = self.vault_dir / f"{_slugify(title)}.md"
+        dir_path = self.vault_dir / subdir if subdir else self.vault_dir
+        dir_path.mkdir(parents=True, exist_ok=True)
+        path = dir_path / f"{_slugify(title)}.md"
         path.write_text(_render(frontmatter, story, related_titles), encoding="utf-8")
         return path
 
     def load(self, title: str) -> dict | None:
-        path = self.vault_dir / f"{_slugify(title)}.md"
-        return _parse(path.read_text(encoding="utf-8")) if path.exists() else None
+        path = self._find_file(title)
+        return _parse(path.read_text(encoding="utf-8")) if path else None
 
     def load_all(self) -> list[dict]:
-        return [_parse(p.read_text(encoding="utf-8")) for p in self.vault_dir.glob("*.md")]
+        results = []
+        for p in self.vault_dir.rglob("*.md"):
+            data = _parse(p.read_text(encoding="utf-8"))
+            rel = p.parent.relative_to(self.vault_dir)
+            data["subdir"] = "" if rel.as_posix() == "." else rel.as_posix()
+            results.append(data)
+        return results
 
     def get_linked_stories(self, title: str) -> list[str]:
         data = self.load(title)
@@ -36,10 +44,14 @@ class Vault:
             return []
         return [_extract_title(link) for link in data["frontmatter"].get("related", [])]
 
+    def _find_file(self, title: str) -> Path | None:
+        matches = list(self.vault_dir.rglob(f"{_slugify(title)}.md"))
+        return matches[0] if matches else None
+
     def _find_related_by_keywords(self, keywords: list[str], exclude: str = "") -> list[str]:
         kw_set = {k.lower() for k in keywords}
         related = []
-        for path in self.vault_dir.glob("*.md"):
+        for path in self.vault_dir.rglob("*.md"):
             data = _parse(path.read_text(encoding="utf-8"))
             fm = data["frontmatter"]
             if fm.get("title") == exclude:
@@ -52,8 +64,8 @@ class Vault:
     def _add_backlinks(self, new_title: str, to: list[str]):
         new_link = f"[[{new_title}]]"
         for title in to:
-            path = self.vault_dir / f"{_slugify(title)}.md"
-            if not path.exists():
+            path = self._find_file(title)
+            if not path:
                 continue
             data = _parse(path.read_text(encoding="utf-8"))
             fm = data["frontmatter"]

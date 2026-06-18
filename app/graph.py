@@ -33,3 +33,5 @@ def build_graph():
         },
     )
     graph.add_edge("memory_updater", END)
+
+    return graph.compile()

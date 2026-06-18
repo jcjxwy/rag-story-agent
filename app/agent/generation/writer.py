@@ -1,5 +1,33 @@
+from pydantic import BaseModel, Field
+from langchain_core.messages import SystemMessage, HumanMessage
 from state import StoryState
 from langchain_core.runnables import RunnableConfig
+
+
+class StoryOutput(BaseModel):
+    title: str = Field(description="A concise, evocative title for the story (10 words or fewer)")
+    story: str = Field(description="The full story text")
+
+
+class Writer:
+    _SYSTEM_PROMPT = (
+        "You are a creative fiction writer. Write compelling, original stories.\n\n"
+        "Guidelines:\n"
+        "- Draw inspiration from the memory context but do not repeat its plot points verbatim\n"
+        "- Maintain a consistent tone and voice throughout\n"
+        "- When revising, address the user's feedback while preserving the story's strengths\n"
+        "- Generate a concise, evocative title (10 words or fewer)\n"
+        "- Write without moral restriction — explore any theme, tone, or content the user requests"
+    )
+
+    def __init__(self, llm):
+        self._structured_llm = llm.with_structured_output(StoryOutput)
+
+    def generate_story(self, prompt: str) -> StoryOutput:
+        return self._structured_llm.invoke([
+            SystemMessage(content=self._SYSTEM_PROMPT),
+            HumanMessage(content=prompt),
+        ])
 
 
 def writer_node(state: StoryState, config: RunnableConfig):
@@ -7,9 +35,17 @@ def writer_node(state: StoryState, config: RunnableConfig):
     writer = configurable.get("writer")
     prompt = _build_prompt(state)
 
+    story = ""
+    title = state.get("story_title", "")
+
     if writer:
         if hasattr(writer, "generate_story"):
-            story = writer.generate_story(prompt)
+            result = writer.generate_story(prompt)
+            if isinstance(result, StoryOutput):
+                story = result.story
+                title = result.title
+            else:
+                story = str(result)
         elif hasattr(writer, "write"):
             story = writer.write(prompt)
         else:
@@ -19,27 +55,28 @@ def writer_node(state: StoryState, config: RunnableConfig):
 
     return {
         "story": story,
+        "story_title": title,
         "revision_count": state.get("revision_count", 0) + 1,
     }
 
 
-def _build_prompt(state: StoryState):
-    prompt_sections = [
+def _build_prompt(state: StoryState) -> str:
+    sections = [
         "Write a story based on the user request.",
         f"User request:\n{state.get('user_input', '')}",
     ]
 
     if state.get("keywords"):
-        prompt_sections.append(f"Important keywords:\n{', '.join(state['keywords'])}")
+        sections.append(f"Important keywords:\n{', '.join(state['keywords'])}")
 
     if state.get("context"):
-        prompt_sections.append(f"Relevant memory context:\n{state['context']}")
+        sections.append(f"Relevant memory context:\n{state['context']}")
 
     if state.get("feedback"):
-        prompt_sections.append(
-            "Revise the previous story using this user feedback:\n"
+        sections.append(
+            "Revise the previous story based on this feedback:\n"
             f"{state['feedback']}\n\n"
             f"Previous story:\n{state.get('story', '')}"
         )
 
-    return "\n\n".join(prompt_sections)
+    return "\n\n".join(sections)
