@@ -3,9 +3,11 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app")))
 
+import re
 import uuid
 import streamlit as st
 from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.messages import AIMessageChunk
 
 from graph import build_graph
 from agent.generation.clients import LLMClient, EmbeddingClient
@@ -40,13 +42,16 @@ def _init():
         }
 
     if "messages" not in st.session_state:
-        st.session_state.messages = []   # committed chat history
+        st.session_state.messages = []
 
     if "stage" not in st.session_state:
-        st.session_state.stage = "idle"  # idle | reviewing | revising
+        st.session_state.stage = "idle"  # idle | generating | reviewing | revising
 
     if "thread_id" not in st.session_state:
         st.session_state.thread_id = None
+
+    if "generating_input" not in st.session_state:
+        st.session_state.generating_input = None  # dict for new run, None to resume
 
 
 _init()
@@ -70,6 +75,39 @@ def _current_state() -> dict:
 
 def _invoke(initial_state=None):
     st.session_state.graph.invoke(initial_state, config=_thread_config())
+
+
+def _invoke_streaming(initial_state=None):
+    """Stream writer/world_builder output word-by-word into a live placeholder."""
+    placeholder = st.empty()
+    buffer = ""
+
+    for chunk, metadata in st.session_state.graph.stream(
+        initial_state,
+        config=_thread_config(),
+        stream_mode="messages",
+    ):
+        if not isinstance(chunk, AIMessageChunk):
+            continue
+        if metadata.get("langgraph_node") not in ("writer", "world_builder"):
+            continue
+        if not isinstance(chunk.content, str) or not chunk.content:
+            continue
+        buffer += chunk.content
+        placeholder.markdown(_stream_display(buffer) + "▌")
+
+    # Show the final content without the cursor; rerun will replace this element.
+    placeholder.markdown(_stream_display(buffer))
+
+
+def _stream_display(buffer: str) -> str:
+    """Strip the leading <title>…</title> tag while it streams in."""
+    m = re.search(r"</title>\s*", buffer, re.DOTALL)
+    if m:
+        return buffer[m.end():]
+    if buffer.lstrip().startswith("<title>"):
+        return ""
+    return buffer
 
 
 def _inject_feedback(approved: bool, feedback: str = "", abandoned: bool = False):
@@ -107,9 +145,21 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
 
+# ── Generating stage ──────────────────────────────────────────────────────────
+# Entered from both idle (new prompt) and revising (feedback submitted).
+# Renders nothing above the stream so the user sees only fresh content.
+
+if st.session_state.stage == "generating":
+    with st.chat_message("assistant"):
+        _invoke_streaming(st.session_state.generating_input)
+    st.session_state.generating_input = None
+    st.session_state.stage = "reviewing"
+    st.rerun()
+
+
 # ── Reviewing stage ───────────────────────────────────────────────────────────
 
-if st.session_state.stage == "reviewing":
+elif st.session_state.stage == "reviewing":
     state = _current_state()
 
     with st.chat_message("assistant"):
@@ -158,9 +208,8 @@ elif st.session_state.stage == "revising":
             {"role": "user", "content": f"Feedback: {feedback.strip()}"}
         )
         _inject_feedback(approved=False, feedback=feedback.strip())
-        with st.spinner("Revising story..."):
-            _invoke()
-        st.session_state.stage = "reviewing"
+        st.session_state.generating_input = None  # resume graph, no new initial state
+        st.session_state.stage = "generating"
         st.rerun()
 
     if cancelled:
@@ -174,7 +223,6 @@ if st.session_state.stage == "idle":
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
         st.session_state.thread_id = str(uuid.uuid4())
-        with st.spinner("Generating story…"):
-            _invoke({"user_input": prompt})
-        st.session_state.stage = "reviewing"
+        st.session_state.generating_input = {"user_input": prompt}
+        st.session_state.stage = "generating"
         st.rerun()

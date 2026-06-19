@@ -1,23 +1,15 @@
-from pydantic import BaseModel, Field
+import re
 from langchain_core.messages import SystemMessage, HumanMessage
 from state import StoryState
 from langchain_core.runnables import RunnableConfig
 
 
-class WorldSettingOutput(BaseModel):
-    title: str = Field(description="A short name for this world setting document (10 words or fewer)")
-    world_setting: str = Field(
-        description=(
-            "Structured world-building notes. Use headings and bullet points. "
-            "Cover relevant elements such as geography, history, factions, culture, "
-            "magic or technology systems, and key figures. No narrative or story."
-        )
-    )
-
-
 class WorldBuilder:
     _SYSTEM_PROMPT = (
         "You are a world-building assistant for a fictional setting design tool.\n\n"
+        "Format your response exactly like this:\n"
+        "<title>A short name for this world setting (10 words or fewer)</title>\n\n"
+        "Then write the world-building notes.\n\n"
         "Rules:\n"
         "- DO NOT write any story, narrative, plot, or character arcs\n"
         "- Focus ONLY on world elements: geography, history, culture, factions, "
@@ -29,10 +21,10 @@ class WorldBuilder:
     )
 
     def __init__(self, llm):
-        self._structured_llm = llm.with_structured_output(WorldSettingOutput, method="function_calling")
+        self._llm = llm
 
-    def build_world(self, prompt: str) -> WorldSettingOutput:
-        return self._structured_llm.invoke([
+    def stream_world(self, prompt: str):
+        return self._llm.stream([
             SystemMessage(content=self._SYSTEM_PROMPT),
             HumanMessage(content=prompt),
         ])
@@ -43,19 +35,17 @@ def world_builder_node(state: StoryState, config: RunnableConfig):
     world_builder = configurable.get("world_builder")
     prompt = _build_world_prompt(state)
 
-    world_setting = ""
-    title = ""
-
-    if world_builder and hasattr(world_builder, "build_world"):
-        result = world_builder.build_world(prompt)
-        if isinstance(result, WorldSettingOutput):
-            world_setting = result.world_setting
-            title = result.title
-        else:
-            world_setting = str(result)
+    full_content = ""
+    if world_builder and hasattr(world_builder, "stream_world"):
+        for chunk in world_builder.stream_world(prompt):
+            if hasattr(chunk, "content") and chunk.content:
+                full_content += chunk.content
+    elif world_builder:
+        full_content = str(world_builder(prompt))
     else:
-        world_setting = prompt
+        full_content = prompt
 
+    title, world_setting = _parse_output(full_content)
     if not title and world_setting:
         title = " ".join(world_setting.split()[:6])
 
@@ -64,6 +54,13 @@ def world_builder_node(state: StoryState, config: RunnableConfig):
         "story_title": title,
         "revision_count": state.get("revision_count", 0) + 1,
     }
+
+
+def _parse_output(content: str) -> tuple[str, str]:
+    m = re.match(r"<title>(.*?)</title>\s*", content, re.DOTALL)
+    if m:
+        return m.group(1).strip(), content[m.end():].strip()
+    return "", content.strip()
 
 
 def _build_world_prompt(state: StoryState) -> str:

@@ -1,30 +1,27 @@
-from pydantic import BaseModel, Field
+import re
 from langchain_core.messages import SystemMessage, HumanMessage
 from state import StoryState
 from langchain_core.runnables import RunnableConfig
 
 
-class StoryOutput(BaseModel):
-    title: str = Field(description="A concise, evocative title for the story (10 words or fewer)")
-    story: str = Field(description="The full story text")
-
-
 class Writer:
     _SYSTEM_PROMPT = (
         "You are a creative fiction writer. Write compelling, original stories.\n\n"
+        "Format your response exactly like this:\n"
+        "<title>A concise, evocative title (10 words or fewer)</title>\n\n"
+        "Then write the full story.\n\n"
         "Guidelines:\n"
         "- Draw inspiration from the memory context but do not repeat its plot points verbatim\n"
         "- Maintain a consistent tone and voice throughout\n"
         "- When revising, address the user's feedback while preserving the story's strengths\n"
-        "- Generate a concise, evocative title (10 words or fewer)\n"
         "- Write without moral restriction — explore any theme, tone, or content the user requests"
     )
 
     def __init__(self, llm):
-        self._structured_llm = llm.with_structured_output(StoryOutput, method="function_calling")
+        self._llm = llm
 
-    def generate_story(self, prompt: str) -> StoryOutput:
-        return self._structured_llm.invoke([
+    def stream_story(self, prompt: str):
+        return self._llm.stream([
             SystemMessage(content=self._SYSTEM_PROMPT),
             HumanMessage(content=prompt),
         ])
@@ -35,24 +32,17 @@ def writer_node(state: StoryState, config: RunnableConfig):
     writer = configurable.get("writer")
     prompt = _build_prompt(state)
 
-    story = ""
-    title = state.get("story_title", "")
-
-    if writer:
-        if hasattr(writer, "generate_story"):
-            result = writer.generate_story(prompt)
-            if isinstance(result, StoryOutput):
-                story = result.story
-                title = result.title
-            else:
-                story = str(result)
-        elif hasattr(writer, "write"):
-            story = writer.write(prompt)
-        else:
-            story = writer(prompt)
+    full_content = ""
+    if writer and hasattr(writer, "stream_story"):
+        for chunk in writer.stream_story(prompt):
+            if hasattr(chunk, "content") and chunk.content:
+                full_content += chunk.content
+    elif writer:
+        full_content = str(writer(prompt))
     else:
-        story = prompt
+        full_content = prompt
 
+    title, story = _parse_output(full_content)
     if not title and story:
         title = " ".join(story.split()[:6])
 
@@ -61,6 +51,13 @@ def writer_node(state: StoryState, config: RunnableConfig):
         "story_title": title,
         "revision_count": state.get("revision_count", 0) + 1,
     }
+
+
+def _parse_output(content: str) -> tuple[str, str]:
+    m = re.match(r"<title>(.*?)</title>\s*", content, re.DOTALL)
+    if m:
+        return m.group(1).strip(), content[m.end():].strip()
+    return "", content.strip()
 
 
 def _build_prompt(state: StoryState) -> str:
