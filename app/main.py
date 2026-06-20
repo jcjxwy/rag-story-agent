@@ -1,9 +1,12 @@
 import sys
 import os
+from typing import cast
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from langchain_core.runnables import RunnableConfig
 from graph import build_graph
+from state import StoryState
 from agent.generation.clients import LLMClient, EmbeddingClient
 from agent.generation.writer import Writer
 from agent.generation.world_builder import WorldBuilder
@@ -39,7 +42,7 @@ def main():
         print("No input provided.")
         return
 
-    result = graph.invoke({"user_input": user_input}, config=config)
+    result = graph.invoke(StoryState(user_input=user_input), config=cast(RunnableConfig, config))
 
     print(f"\nStory saved to vault: {result.get('story_title', '')}")
 

@@ -1,4 +1,5 @@
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
+from langchain_huggingface import HuggingFaceEmbeddings
 from pydantic import SecretStr
 from dotenv import load_dotenv
 import os
@@ -6,6 +7,7 @@ import os
 load_dotenv()
 
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 class LLMClient:
@@ -22,16 +24,11 @@ class LLMClient:
 
 
 class EmbeddingClient:
-    DIM = 1536  # dimension for deepseek-embedding
+    DIM = 384  # all-MiniLM-L6-v2 output dimension
 
     def __init__(self):
-        api_key = os.getenv("DEEPSEEK_API_KEY")
-        if not api_key:
-            raise ValueError("DEEPSEEK_API_KEY environment variable is not set")
-        self.embedder = OpenAIEmbeddings(
-            model=os.getenv("EMBEDDING_MODEL", "deepseek-embedding"),
-            api_key=SecretStr(api_key),
-            base_url=os.getenv("EMBEDDING_BASE_URL", _DEEPSEEK_BASE_URL),
+        self.embedder = HuggingFaceEmbeddings(
+            model_name=os.getenv("EMBEDDING_MODEL", _EMBEDDING_MODEL),
         )
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
