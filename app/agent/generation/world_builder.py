@@ -9,7 +9,8 @@ class WorldBuilder:
         "You are a world-building assistant for a fictional setting design tool.\n\n"
         "Format your response exactly like this:\n"
         "<title>A short name for this world setting (10 words or fewer)</title>\n\n"
-        "Then write the world-building notes.\n\n"
+        "Write a concise introduction paragraph (2-3 sentences) that captures the essence "
+        "of the world. Then write the detailed notes using ## section headings and bullet points.\n\n"
         "Rules:\n"
         "- DO NOT write any story, narrative, plot, or character arcs\n"
         "- Focus ONLY on world elements: geography, history, culture, factions, "
@@ -64,26 +65,38 @@ def _parse_output(content: str) -> tuple[str, str]:
 
 
 def _build_world_prompt(state: StoryState) -> str:
-    is_revision = bool(state.get("feedback"))
+    existing = state.get("story", "")
+    feedback = state.get("feedback", "")
 
-    sections = [
-        "Modify the existing world setting based on the feedback below. "
-        "Preserve all established facts unless the feedback explicitly changes them."
-        if is_revision else
-        "Design a world setting based on the user's request.",
-        f"User request:\n{state.get('user_input', '')}",
-    ]
-
-    if state.get("keywords"):
-        sections.append(f"Key elements to include:\n{', '.join(state.get('keywords', []))}")
-
-    if not is_revision and state.get("context"):
-        sections.append(f"Existing world settings for reference:\n{state.get('context', '')}")
-
-    if is_revision:
-        sections.append(
-            f"Feedback:\n{state.get('feedback', '')}\n\n"
-            f"Current world setting:\n{state.get('story', '')}"
-        )
+    if feedback:
+        # Post-review revision via the feedback loop
+        sections = [
+            "Modify the existing world setting based on the feedback below. "
+            "Preserve all established facts unless the feedback explicitly changes them.",
+            f"User request:\n{state.get('user_input', '')}",
+        ]
+        if state.get("keywords"):
+            sections.append(f"Key elements to include:\n{', '.join(state.get('keywords', []))}")
+        sections.append(f"Feedback:\n{feedback}\n\nCurrent world setting:\n{existing}")
+    elif existing:
+        # Modification of a world loaded from the vault
+        sections = [
+            "Modify the existing world setting based on the user's request. "
+            "Preserve all established facts unless the user explicitly changes them.",
+            f"User request:\n{state.get('user_input', '')}",
+        ]
+        if state.get("keywords"):
+            sections.append(f"Key elements to include:\n{', '.join(state.get('keywords', []))}")
+        sections.append(f"Current world setting:\n{existing}")
+    else:
+        # Fresh world creation
+        sections = [
+            "Design a world setting based on the user's request.",
+            f"User request:\n{state.get('user_input', '')}",
+        ]
+        if state.get("keywords"):
+            sections.append(f"Key elements to include:\n{', '.join(state.get('keywords', []))}")
+        if state.get("context"):
+            sections.append(f"Existing world settings for reference:\n{state.get('context', '')}")
 
     return "\n\n".join(sections)

@@ -15,7 +15,7 @@ from agent.generation.writer import Writer
 from agent.generation.world_builder import WorldBuilder
 from agent.parser.input_parser import InputParser
 from agent.retrieval.retriever import Retriever
-from agent.memory.vault import Vault
+from agent.memory.vault import Vault, slugify
 from agent.memory.memory_updater import MemoryUpdater
 
 
@@ -29,10 +29,13 @@ def _init():
     if "graph" not in st.session_state:
         st.session_state.graph = build_graph(checkpointer=MemorySaver())
 
+    if "vault" not in st.session_state:
+        st.session_state.vault = Vault("data/vault")
+
     if "components" not in st.session_state:
         llm = LLMClient().llm
         embedder = EmbeddingClient()
-        vault = Vault("data/vault")
+        vault = st.session_state.vault
         st.session_state.components = {
             "parser": InputParser(llm),
             "retriever": Retriever(vault, embedder, dim=EmbeddingClient.DIM),
@@ -52,6 +55,9 @@ def _init():
 
     if "generating_input" not in st.session_state:
         st.session_state.generating_input = None  # dict for new run, None to resume
+
+    if "selected_world" not in st.session_state:
+        st.session_state.selected_world = None  # {slug, title} or None
 
 
 _init()
@@ -138,6 +144,47 @@ def _render_story(state: dict):
     return title, story
 
 
+# ── Sidebar: World Settings ───────────────────────────────────────────────────
+
+with st.sidebar:
+    st.header("World Settings")
+    worlds = st.session_state.vault.list_worlds()
+    selected = st.session_state.selected_world
+
+    if not worlds:
+        st.caption("No worlds saved yet.")
+
+    for world in worlds:
+        is_active = selected is not None and selected["slug"] == world["slug"]
+        header = f"✓ {world['title']}" if is_active else world["title"]
+
+        with st.expander(header, expanded=is_active):
+            st.markdown(world["intro"])
+            st.divider()
+
+            if is_active:
+                if st.button("Deselect", key=f"sel_{world['slug']}", use_container_width=True):
+                    st.session_state.selected_world = None
+                    st.rerun()
+            else:
+                if st.button("Select", key=f"sel_{world['slug']}", use_container_width=True, type="primary"):
+                    st.session_state.selected_world = {"slug": world["slug"], "title": world["title"]}
+                    st.rerun()
+
+            with st.form(f"rename_{world['slug']}"):
+                new_name = st.text_input("Rename world", value=world["title"], label_visibility="collapsed")
+                if st.form_submit_button("Rename", use_container_width=True):
+                    new_name = str(new_name).strip()
+                    if new_name and new_name != world["title"]:
+                        ok = st.session_state.vault.rename_world(world["title"], new_name)
+                        if ok:
+                            if is_active:
+                                st.session_state.selected_world = {"slug": slugify(new_name), "title": new_name}
+                            st.rerun()
+                        else:
+                            st.error("Rename failed — a world with that name may already exist.")
+
+
 # ── Chat history ──────────────────────────────────────────────────────────────
 
 for msg in st.session_state.messages:
@@ -219,10 +266,30 @@ elif st.session_state.stage == "revising":
 # ── Idle stage: prompt input ──────────────────────────────────────────────────
 
 if st.session_state.stage == "idle":
-    prompt = st.chat_input("Enter your story prompt…")
+    selected = st.session_state.selected_world
+    if selected:
+        st.info(f"Modifying world: **{selected['title']}**")
+
+    placeholder_text = (
+        f"How would you like to modify {selected['title']}?"
+        if selected else "Enter your story or world-building prompt…"
+    )
+    prompt = st.chat_input(placeholder_text)
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
         st.session_state.thread_id = str(uuid.uuid4())
-        st.session_state.generating_input = {"user_input": prompt}
+
+        if selected:
+            world_data = st.session_state.vault.load(selected["title"])
+            existing_story = world_data["story"] if world_data else ""
+            st.session_state.generating_input = {
+                "user_input": f"Modify the world setting '{selected['title']}': {prompt}",
+                "story": existing_story,
+                "story_title": selected["title"],
+                "world_name": selected["slug"],
+            }
+        else:
+            st.session_state.generating_input = {"user_input": prompt}
+
         st.session_state.stage = "generating"
         st.rerun()
