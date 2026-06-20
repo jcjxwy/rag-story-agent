@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-A memory-augmented AI storytelling agent. The user provides a story prompt; the agent retrieves relevant past stories from a local Markdown vault, generates a new story via an LLM, collects user feedback in a revision loop, and saves the approved story back to the vault. Stories link to related stories using Obsidian-style `[[wikilinks]]`.
+A memory-augmented AI creative writing agent with two modes: **story writing** and **world building**. The user provides a prompt; the agent classifies the intent, retrieves relevant context from a local Markdown vault, generates content via DeepSeek LLM (streamed word-by-word), collects user feedback in a revision loop (with approve / revise / abandon options), and saves approved content back to the vault. Each world gets its own vault directory; stories written in that world are stored alongside its world-building document.
 
 ---
 
@@ -21,7 +21,7 @@ streamlit run ui/app.py
 **Docker:**
 ```bash
 docker build -t story-writer .
-docker run -e DEEPSEEK_API_KEY=... -e OPENAI_API_KEY=... story-writer
+docker run -e DEEPSEEK_API_KEY=... story-writer
 ```
 
 ---
@@ -30,10 +30,11 @@ docker run -e DEEPSEEK_API_KEY=... -e OPENAI_API_KEY=... story-writer
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `DEEPSEEK_API_KEY` | Yes | DeepSeek chat LLM |
-| `OPENAI_API_KEY` | Yes | OpenAI embeddings (`text-embedding-3-small`) |
-| `EMBEDDING_MODEL` | No | Override embedding model (default: `text-embedding-3-small`) |
-| `EMBEDDING_BASE_URL` | No | Override embedding endpoint (e.g. if using a different provider) |
+| `DEEPSEEK_API_KEY` | Yes | DeepSeek chat LLM **and** embeddings |
+| `EMBEDDING_MODEL` | No | Override embedding model (default: `deepseek-embedding`) |
+| `EMBEDDING_BASE_URL` | No | Override embedding endpoint (default: `https://api.deepseek.com`) |
+
+> Only one API key is required. Both `LLMClient` and `EmbeddingClient` use `DEEPSEEK_API_KEY`.
 
 ---
 
@@ -42,19 +43,26 @@ docker run -e DEEPSEEK_API_KEY=... -e OPENAI_API_KEY=... story-writer
 ```
 User Input
     ↓
-parser          Extract keywords + search_folders from prompt
+parser          Classifies intent (story | world_building)
+                Extracts keywords, world_name, search_folders
     ↓
 retriever       Stage 1: FAISS semantic search
-                Stage 2: rerank by vault keywords field overlap
-                Stage 3: graph expand via [[wikilinks]]
+                Stage 2: filter by search_folders (optional)
+                Stage 3: rerank by vault keywords field overlap
+                Stage 4: graph expand via [[wikilinks]] (1-hop)
     ↓
-writer          Build prompt → call DeepSeek LLM → returns title + story
+    ├── intent=story ──────── writer        → streams story via <title> tag format
+    └── intent=world_building  world_builder → streams world notes (no narrative)
     ↓
-feedback_provider   User approves or provides revision feedback
-    ↓ (if rejected, loop back to writer)
-memory_updater  Save story to Markdown vault, auto-link related stories
+feedback_provider   User approves, requests revision, or abandons
+    ├── approve  → memory_updater → END
+    ├── revise   → back to writer / world_builder
+    └── abandon  → END (nothing saved)
     ↓
-END
+memory_updater  Saves to vault:
+                  world_building → data/vault/<slugify(title)>/
+                  story (with world_name) → data/vault/<world_name>/
+                  story (no world_name) → data/vault/
 ```
 
 The graph is defined in `app/graph.py` using LangGraph `StateGraph`. Shared state is `StoryState` (`app/state.py`).
@@ -67,29 +75,33 @@ The graph is defined in `app/graph.py` using LangGraph `StateGraph`. Shared stat
 story_writer/
 ├── app/
 │   ├── main.py                         CLI entry point
-│   ├── graph.py                        LangGraph graph definition
+│   ├── graph.py                        LangGraph graph + routing functions
 │   ├── state.py                        StoryState TypedDict
 │   ├── utils/
 │   │   └── logger.py
 │   └── agent/
 │       ├── generation/
-│       │   ├── clients.py              LLMClient (DeepSeek) + EmbeddingClient (OpenAI)
-│       │   └── writer.py               Writer, StoryOutput, writer_node, _build_prompt
+│       │   ├── clients.py              LLMClient + EmbeddingClient (both DeepSeek)
+│       │   ├── writer.py               Writer (streaming), writer_node, _build_prompt
+│       │   └── world_builder.py        WorldBuilder (streaming), world_builder_node
 │       ├── parser/
 │       │   └── input_parser.py         InputParser, ResponseFormat, parser_node
 │       ├── retrieval/
-│       │   ├── retriever.py            Retriever (3-stage), retriever_node
-│       │   └── vector_store.py         FAISS wrapper
+│       │   ├── retriever.py            Retriever (3-stage pipeline), retriever_node
+│       │   └── vector_store.py         FAISS index wrapper
 │       ├── memory/
-│       │   ├── vault.py                Vault (Obsidian-style Markdown files)
+│       │   ├── vault.py                Vault (Obsidian-style Markdown)
 │       │   └── memory_updater.py       MemoryUpdater, memory_updater_node
 │       └── evaluation/
-│           └── feedback_collector.py   FeedbackCollector, feedback_collector_node, story_accept
+│           └── feedback_collector.py   FeedbackCollector, feedback_collector_node
 ├── ui/
 │   └── app.py                          Streamlit chatbot UI
 ├── data/
-│   └── vault/                          Story Markdown files (created at runtime)
-├── pyrightconfig.json                  Pyright/Pylance extraPaths: ["app"]
+│   └── vault/                          Markdown files (created at runtime)
+│       └── <world-name>/               One directory per world
+│           ├── <world-name>.md         World building document
+│           └── <story-title>.md        Stories set in this world
+├── pyrightconfig.json                  extraPaths: ["app"]
 ├── requirements.txt
 ├── Dockerfile
 └── README.md
@@ -101,117 +113,128 @@ story_writer/
 
 ### StoryState fields
 ```python
+intent          # "story" | "world_building" — set by parser
+world_name      # slug of the target world dir (e.g. "elden-vale") — set by parser
 user_input      # raw user prompt
-keywords        # extracted by parser (world, characters, themes, style)
-search_folders  # vault subdirs to restrict search (extracted by parser)
-context         # formatted retrieval results (injected by retriever)
-story           # current story draft
-story_title     # title generated by Writer (used as vault filename)
-feedback        # user revision feedback (empty when approved)
-approved        # bool set by feedback_collector_node
-revision_count  # incremented by writer_node each generation
-memory_updated  # bool set by memory_updater_node
+keywords        # extracted by parser
+search_folders  # vault subdirs to restrict retrieval (set by parser)
+context         # formatted retrieval results (set by retriever)
+story           # current story or world-setting draft
+story_title     # title parsed from LLM output (used as vault filename)
+feedback        # revision feedback (empty when approved or abandoned)
+approved        # bool — set by feedback_collector_node
+abandoned       # bool — set by feedback_collector_node; routes to END without saving
+revision_count  # incremented by writer_node / world_builder_node
+memory_updated  # bool — set by memory_updater_node
 ```
+
+### LLM output format (streaming)
+Both `Writer` and `WorldBuilder` instruct the LLM to prefix output with a title tag:
+```
+<title>The Concise Title Here</title>
+
+Full content follows...
+```
+The nodes collect the full stream, parse title/body with `_parse_output()`. In the UI,
+`_stream_display()` hides the tag while it is accumulating and shows only the content.
 
 ### Vault file format
-Each story is a Markdown file with YAML frontmatter:
 ```markdown
 ---
-title: Space Isolation 20260617
-date: '2026-06-17'
-keywords: [space, isolation, sci-fi]
-related: ['[[another-story]]']
+title: Elden Vale World Notes
+date: '2026-06-20'
+keywords: [fantasy, magic, factions]
+related: ['[[the-first-hero]]']
 ---
 
-Story body...
+## Geography
+...
 
 ## Related
-- [[another-story]]
+- [[the-first-hero]]
 ```
 
-Files can be organised in subdirectories (e.g. `data/vault/sci-fi/`). When saving, `vault.py` auto-discovers related files by keyword overlap and adds bidirectional `[[links]]`.
+World-building docs and their stories share one directory:
+```
+data/vault/
+├── elden-vale/
+│   ├── elden-vale-world-notes.md   ← world building doc
+│   ├── the-first-hero.md           ← story in this world
+│   └── siege-of-the-keep.md
+└── standalone-story.md             ← story with no world
+```
+
+### Graph routing
+After `retriever`, intent determines the generation node:
+```python
+def _route_by_intent(state) -> str:
+    return "world_builder" if state.get("intent") == "world_building" else "writer"
+```
+
+After `feedback_provider`, three routes:
+```python
+def _route_after_feedback(state) -> str:
+    if state.get("approved"):  return "approve"
+    if state.get("abandoned"): return "abandon"   # → END, nothing saved
+    return "revise_world" if state.get("intent") == "world_building" else "revise_story"
+```
 
 ### Graph compilation modes
-`build_graph()` in `graph.py` accepts an optional `checkpointer`:
-- **No checkpointer** (CLI): runs straight through; `FeedbackCollector` handles feedback via CLI `input()`
-- **With `MemorySaver` checkpointer** (UI): compiles with `interrupt_before=["feedback_provider"]`; the Streamlit UI injects feedback via `graph.update_state(..., as_node="feedback_provider")`
+- **No checkpointer** (CLI): straight-through; `FeedbackCollector.collect()` uses CLI `input()`; returns `(approved, abandoned, feedback)` 3-tuple
+- **With `MemorySaver`** (UI): `interrupt_before=["feedback_provider"]`; UI injects state via `graph.update_state(..., as_node="feedback_provider")`
 
-### Retriever 3-stage pipeline
-1. FAISS semantic search over story bodies (wider candidate pool: `k*2`, or all when folder filter active)
-2. Filter by `search_folders` if specified
-3. Re-rank surviving candidates by keyword field overlap (set intersection with `frontmatter["keywords"]`)
-4. Graph expand: follow `[[related]]` links from top-k results to pull in linked stories
+### Streaming in the UI
+`_invoke_streaming()` in `ui/app.py` calls `graph.stream(stream_mode="messages")`. Chunks from `writer` or `world_builder` nodes (filtered by `metadata["langgraph_node"]`) are written to a `st.empty()` placeholder. The `<title>` tag is hidden during accumulation via `_stream_display()`.
+
+The UI has four stages: `idle → generating → reviewing → revising`
+- `generating` stage was added to avoid double-rendering the old story above the streaming new content when feedback is submitted.
 
 ---
 
-## Development Timeline (Session 2026-06-18)
+## Development Timeline
 
-All work below was completed in a single session. The project skeleton (folder structure, stub files, basic node signatures) existed beforehand. This session filled in all implementations.
+### Session 2026-06-18 — Initial Implementation
+All core agent code was written from scratch:
+- Vault, MemoryUpdater, InputParser, Retriever (3-stage), Writer, FeedbackCollector, graph wiring, CLI entry point, Streamlit UI, bug fixes across all files.
+- See original handover for full detail of this session's work.
 
-### Phase 1 — Documentation & Understanding
-- Read and analysed `README.md` against the actual file tree
-- Rewrote `README.md` to reflect the real structure (`app/agent/` hierarchy, DeepSeek LLM, no Streamlit UI yet, no Obsidian graph yet)
+### Session 2026-06-20 — Features & Bug Fixes
 
-### Phase 2 — Parser
-- Completed `parser_node` in `input_parser.py` (was a `pass` stub)
-- Added injection pattern consistent with other nodes (`config["configurable"]["parser"]`)
+#### Fixes
+- **`EmbeddingClient` switched from OpenAI to DeepSeek** — was failing at startup with `OPENAI_API_KEY` not set. Now uses `DEEPSEEK_API_KEY` + `https://api.deepseek.com` with `deepseek-embedding` model. `EmbeddingClient.DIM` updated from 1536 to match DeepSeek's embedding output.
+- **`LLMClient.api_key` now validated** — added `if not api_key: raise ValueError(...)` and wraps key in `SecretStr` to satisfy LangChain's type requirement.
+- **`with_structured_output` → `method="function_calling"`** — DeepSeek rejects the default `json_schema` response format; function calling is supported. Applied to both `InputParser` and (at the time) `Writer`. Later both were rewritten to use plain streaming instead.
+- **`_slugify` renamed to `slugify`** in `vault.py` — function is now used by `memory_updater.py` as a public import; underscore prefix was misleading.
+- **Pylance type fixes** in `main.py`: input to `graph.invoke()` cast to `StoryState`; config cast to `RunnableConfig` via `typing.cast`.
+- **Pylance type fix** in `ui/app.py` line 97: `chunk.content` typed as `str | list[...]`; replaced `chunk.content or ""` with `isinstance(chunk.content, str)` guard.
 
-### Phase 3 — Vault & Memory
-- Created `app/agent/memory/vault.py` from scratch
-  - Obsidian-style Markdown files with YAML frontmatter (`title`, `date`, `keywords`, `related`)
-  - `[[wikilinks]]` in a `## Related` section
-  - Auto-discovers related files by keyword overlap on save
-  - Adds bidirectional backlinks to existing files
-- Updated `memory_updater.py` to use `Vault`; added `MemoryUpdater` class
-- Added `story_title` field to `StoryState` — `MemoryUpdater` reads it directly rather than generating a title
-- Extended `vault.py` to support subdirectories: `save(subdir=)`, `rglob` in all scans, `_find_file` resolves across subdirs
+#### World Building Feature
+- Added `intent: str` and `world_name: str` to `StoryState`
+- `input_parser.py` — `ResponseFormat` extended with `intent: Literal["story", "world_building"]` and `world_name: str`; system prompt updated; `parser_node` returns both new fields
+- Created `app/agent/generation/world_builder.py` — `WorldBuilder` class with `stream_world(prompt)`, `world_builder_node`, `_build_world_prompt`; system prompt explicitly forbids narrative writing
+- `graph.py` — added `_route_by_intent` (after retriever) and `_route_after_feedback` (after feedback); added `world_builder` node; removed old `story_accept` import
+- `memory_updater.py` — saves world-building docs to `data/vault/<slugify(title)>/`; saves stories to `data/vault/<world_name>/` if set, else vault root
+- `main.py` + `ui/app.py` — `WorldBuilder(llm)` wired into `configurable`
 
-### Phase 4 — Retrieval
-- Designed and implemented 3-stage retrieval pipeline in `retriever.py`
-  - Stage 1: FAISS semantic search (wider candidate pool)
-  - Stage 2: re-rank by `frontmatter["keywords"]` overlap (set intersection, not BM25)
-  - Stage 3: graph expand via `[[wikilinks]]` (1-hop)
-- Updated `vector_store.py`: added `dim` attribute, guard against FAISS returning `-1` indices, `k=0` edge case
-- Added `search_folders` support end-to-end:
-  - `search_folders: list[str]` added to `StoryState`
-  - `input_parser.py` updated to extract folder constraints from user prompt
-  - `retriever.py` filters candidates by `subdir` before re-ranking
-  - `vault.py` `load_all()` attaches `subdir` to each story dict
+#### World-based Vault Directory Structure
+- `state.py` — added `world_name: str`
+- `input_parser.py` — parser also extracts `world_name` (explicit world reference in user prompt → lowercase hyphenated slug); includes it in `search_folders` when set
+- `memory_updater.py` — uses `slugify(title)` as subdir for world building; uses `world_name` as subdir for stories
 
-### Phase 5 — Writer
-- Added `Writer` class and `StoryOutput` Pydantic model to `writer.py`
-  - Uses `llm.with_structured_output(StoryOutput)` to return `title` + `story` in one call
-  - System prompt includes "no moral restriction" guideline
-- `writer_node` populates `story_title` in state from `StoryOutput.title`
-- `_build_prompt` made revision-aware: different opening instruction and no memory context on revisions
-- Fixed TypedDict bracket-access bugs (used `.get()` throughout)
+#### Abandon Feature
+- `state.py` — added `abandoned: bool`
+- `feedback_collector.py` — `FeedbackCollector.collect()` returns 3-tuple `(approved, abandoned, feedback)`; CLI prompt changed to `[a]pprove / [r]evise / [q]uit`; removed `story_accept` (replaced by `_route_after_feedback` in graph)
+- `graph.py` — `_route_after_feedback` handles `"abandon"` → `END`; `"approve"` → `memory_updater`; `"revise_story"` → `writer`; `"revise_world"` → `world_builder`
+- `ui/app.py` — Abandon button added to reviewing stage (3-column layout); Abandon button inside the revising feedback form
 
-### Phase 6 — Feedback & Graph
-- Completed `feedback_collector.py`
-  - Added `FeedbackCollector` class with `collect(state)` method
-  - Fixed critical bug: `story_accept` was `return` (None) instead of `return "revise"` — broke LangGraph routing
-  - Added `_display_story` helper showing title and revision count in CLI
-- Fixed `graph.py`: `build_graph()` was missing `return graph.compile()` — returned `None`
-- Updated `graph.py` to accept optional `checkpointer` parameter for UI interrupt mode
-
-### Phase 7 — Clients & Entry Points
-- Renamed `llm_client.py` → `clients.py`
-- Added `EmbeddingClient` to `clients.py` (wraps `OpenAIEmbeddings`, configurable via env vars)
-- Replaced `create_agent` (non-existent LangChain function) in `input_parser.py` with `llm.with_structured_output(ResponseFormat)`; converted `ResponseFormat` from `@dataclass` to Pydantic `BaseModel`
-- Created `app/main.py` — CLI entry point that wires all components and invokes the graph
-- Fixed `graph.py` relative imports (`from .utils.logger` → `from utils.logger`) for consistency with the rest of the codebase
-
-### Phase 8 — Streamlit UI
-- Created `ui/app.py` — Streamlit chatbot interface
-  - Three stages: `idle` (prompt input) → `reviewing` (approve/revise buttons) → `revising` (feedback form)
-  - Uses LangGraph `interrupt_before=["feedback_provider"]` + `MemorySaver` checkpointer
-  - Feedback injected via `graph.update_state(..., as_node="feedback_provider")` — no CLI prompts needed
-  - Components initialised once in `st.session_state`; each new prompt gets a fresh `uuid` thread
-- Fixed import path: `os.path.abspath(__file__)` to handle relative invocation paths
-- Created `pyrightconfig.json` at project root with `extraPaths: ["app"]` to resolve IDE import warnings
-
-### Phase 9 — Handover
-- Created `ai_handover.md` (this file)
+#### Real-time Streaming
+- `writer.py` — rewrote to use `llm.stream()` directly (removed Pydantic `StoryOutput` + `with_structured_output`); LLM instructed to prefix output with `<title>…</title>`; `Writer.stream_story(prompt)` returns the stream iterator; `writer_node` collects chunks, parses title/body via `_parse_output()`
+- `world_builder.py` — same streaming rewrite; `WorldBuilder.stream_world(prompt)` returns stream
+- `ui/app.py`:
+  - Added `_invoke_streaming()` — iterates `graph.stream(stream_mode="messages")`, filters for writer/world_builder node chunks, updates `st.empty()` placeholder; shows final content without cursor on completion (no `placeholder.empty()` to avoid flash)
+  - Added `_stream_display()` — hides `<title>` tag while it accumulates, shows content once `</title>` is seen
+  - Added `"generating"` stage — entered from both idle (new prompt) and revising (feedback submitted); renders only the streaming content with nothing above it; transitions to reviewing on completion
+  - Idle stage now sets `generating_input` + transitions to `"generating"` instead of streaming inline
 
 ---
 
@@ -219,47 +242,63 @@ All work below was completed in a single session. The project skeleton (folder s
 
 ### Must fix before production use
 
-1. **Retriever not refreshed after save** — `Retriever._build_indexes()` runs once at init. After `memory_updater` saves a new story, the FAISS index and `_stories` list are stale. The next prompt will not find the newly saved story. Fix: call `retriever.refresh()` after `memory_updater_node` runs, or rebuild the `Retriever` from the vault at the start of each invocation.
+1. **Retriever not refreshed after save** — `Retriever._build_indexes()` runs once at init. After `memory_updater` saves a new story, the FAISS index is stale; the next prompt will not find the newly saved content. Fix: call `retriever.refresh()` in `memory_updater_node` after saving, or expose a `refresh` hook on the graph.
 
-2. **No `subdir` passed to `vault.save()`** — `MemoryUpdater.update()` always saves to the vault root regardless of `search_folders`. If genre-based subdirectory organisation is desired, `search_folders` (or a new `save_folder` state field) should be forwarded to `vault.save(subdir=...)`.
-
-3. **No `__init__.py` files** — `retriever.py` uses relative imports (`from .vector_store import VectorStore`, `from ..memory.vault import Vault`). Python 3 namespace packages allow this in many cases, but if import errors occur, add empty `__init__.py` files to `app/agent/`, `app/agent/retrieval/`, `app/agent/memory/`, etc.
-
-4. **`EmbeddingClient` uses OpenAI, not DeepSeek** — DeepSeek does not expose a public embeddings endpoint. `OPENAI_API_KEY` is required separately for embeddings. If a single-provider setup is preferred, consider replacing `EmbeddingClient` with a local model (e.g. `sentence-transformers` with `all-MiniLM-L6-v2`, dim=384) — update `EmbeddingClient.DIM` and the `Retriever` constructor accordingly.
-
-5. **FAISS dim mismatch** — `Retriever` defaults to `dim=512` but `EmbeddingClient.DIM = 1536`. Callers in both `main.py` and `ui/app.py` already pass `dim=EmbeddingClient.DIM` correctly, but if the default is used elsewhere it will fail. Consider removing the `dim` default or asserting it matches.
+2. **No `__init__.py` files** — `retriever.py` uses relative imports (`from .vector_store import VectorStore`, `from ..memory.vault import Vault`). Python 3 namespace packages handle this in most setups, but if import errors occur on a fresh install, add empty `__init__.py` to `app/agent/`, `app/agent/retrieval/`, `app/agent/memory/`, etc.
 
 ### Nice to have
 
-- **Tests** — no tests exist. Priority areas: `vault.py` (save/load/backlinks), `_build_prompt` (fresh vs revision), `retriever.py` (stage pipeline), `story_accept` routing.
-- **`story_title` used as vault filename** — `_slugify(title)` may produce collisions if two stories have the same first 6 words. Consider appending a short timestamp suffix in `memory_updater.py`.
-- **Streamlit UI: loading state** — `st.spinner` blocks the UI thread during LLM calls. For longer stories this is noticeable. Consider `st.status` with streaming output if LangChain streaming is added.
-- **README** — project structure section still shows `llm_client.py`; already fixed to `clients.py` in the file but verify README is consistent.
+- **Tests** — no tests exist. Priority: `vault.py` (save/load/backlinks/subdir), `_build_prompt` (fresh vs revision), `_build_world_prompt`, retriever pipeline stages, graph routing (`_route_by_intent`, `_route_after_feedback`).
+- **`story_title` slug collisions** — `slugify(title)` may collide for similar titles. Consider appending a short timestamp in `memory_updater.py`.
+- **World name mismatch on retrieval** — when a story references a world by name, `search_folders` is set but the actual world directory slug might not match exactly what the parser returns. If retrieval misses the world context, the LLM won't have it. A fuzzy folder match in `retriever.py` would help.
+- **Retriever `dim` default** — `Retriever` has `dim=512` as default but `EmbeddingClient.DIM` is 1536 (or whatever DeepSeek returns). The default is misleading; consider removing it and requiring the caller to pass it explicitly.
 
 ---
 
 ## Component Instantiation Reference
 
 ```python
+from langchain_core.runnables import RunnableConfig
+from typing import cast
+from graph import build_graph
+from state import StoryState
 from agent.generation.clients import LLMClient, EmbeddingClient
 from agent.generation.writer import Writer
+from agent.generation.world_builder import WorldBuilder
 from agent.parser.input_parser import InputParser
 from agent.retrieval.retriever import Retriever
 from agent.memory.vault import Vault
 from agent.memory.memory_updater import MemoryUpdater
-from agent.evaluation.feedback_collector import FeedbackCollector
+from agent.evaluation.feedback_collector import FeedbackCollector  # CLI only
 
 llm      = LLMClient().llm
 embedder = EmbeddingClient()
-vault    = Vault("data/vault")          # subdir="sci-fi" to scope a save
+vault    = Vault("data/vault")
 
 config = {
     "configurable": {
-        "parser":           InputParser(llm),
-        "retriever":        Retriever(vault, embedder, dim=EmbeddingClient.DIM),
-        "writer":           Writer(llm),
+        "parser":            InputParser(llm),
+        "retriever":         Retriever(vault, embedder, dim=EmbeddingClient.DIM),
+        "writer":            Writer(llm),
+        "world_builder":     WorldBuilder(llm),
         "feedback_provider": FeedbackCollector(),   # omit in UI mode
-        "memory_updater":   MemoryUpdater(vault),
+        "memory_updater":    MemoryUpdater(vault),
     }
 }
+
+graph = build_graph()   # no checkpointer for CLI
+# graph = build_graph(checkpointer=MemorySaver())  # for Streamlit UI
+
+# CLI invocation
+result = graph.invoke(StoryState(user_input="..."), config=cast(RunnableConfig, config))
+
+# UI invocation (in ui/app.py, via graph.stream + graph.update_state)
+```
+
+### FeedbackCollector.collect() return signature
+```python
+# Returns (approved: bool, abandoned: bool, feedback: str)
+# approved=True  → save to vault
+# abandoned=True → discard, go to END
+# both False     → revise (feedback contains the user's request)
 ```
